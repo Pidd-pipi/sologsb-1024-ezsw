@@ -1,6 +1,6 @@
 import { useReducer } from 'react';
 import { recalculatePlans, samplePlans } from '../data';
-import type { Cue, EditorState, LightingPlan, Scene, UserRole, Workspace } from '../types';
+import type { Cue, EditorState, LightingPlan, MergeChoice, MergeSession, Scene, UserRole, Workspace } from '../types';
 
 export const LIGHTING_STORAGE_KEY = 'sologsb-1024/lighting-cue-desk/v1';
 
@@ -16,7 +16,8 @@ export function createInitialWorkspace(): Workspace {
     comparePlanId: plans[1].id,
     selectedSceneId: plans[0].scenes[0].id,
     selectedCueId: plans[0].scenes[0].cues[0].id,
-    role: 'designer'
+    role: 'designer',
+    mergeSessions: []
   };
 }
 
@@ -37,11 +38,23 @@ export type EditorAction =
   | { type: 'selectPlan'; planId: string }
   | { type: 'comparePlan'; planId: string }
   | { type: 'setRole'; role: UserRole }
+  | { type: 'merge/create'; session: MergeSession }
+  | { type: 'merge/field'; sessionId: string; blockId: string; entryKey: string; fieldId: string; choice: MergeChoice }
+  | { type: 'merge/freeze'; sessionId: string; blockId: string; choice: MergeChoice }
+  | { type: 'merge/finish'; sessionId: string; plan: LightingPlan; warnings: string[] }
+  | { type: 'merge/remove'; sessionId: string }
   | { type: 'undo' }
   | { type: 'redo' };
 
+function withMergeSession(workspace: Workspace, sessionId: string, update: (session: MergeSession) => MergeSession) {
+  workspace.mergeSessions = workspace.mergeSessions.map((session) =>
+    session.id === sessionId ? update(session) : session
+  );
+}
+
 function normalizeWorkspace(workspace: Workspace) {
   recalculatePlans(workspace.plans);
+  if (!Array.isArray(workspace.mergeSessions)) workspace.mergeSessions = [];
   const active = workspace.plans.find((plan) => plan.id === workspace.activePlanId) ?? workspace.plans[0];
   if (!active) return workspace;
   workspace.activePlanId = active.id;
@@ -120,6 +133,101 @@ export function lightingReducer(state: EditorState, action: EditorAction): Edito
       return { ...state, workspace: { ...state.workspace, comparePlanId: action.planId } };
     case 'setRole':
       return { ...state, workspace: { ...state.workspace, role: action.role } };
+    case 'merge/create': {
+      const next = clone(state.workspace);
+      next.mergeSessions = [action.session, ...next.mergeSessions];
+      return {
+        workspace: next,
+        past: [...state.past.slice(-49), clone(state.workspace)],
+        future: [],
+        lastAction: '已导入两份离线草稿并建立合并任务'
+      };
+    }
+    case 'merge/field': {
+      const next = clone(state.workspace);
+      withMergeSession(next, action.sessionId, (session) => {
+        for (const block of session.blocks) {
+          if (block.id !== action.blockId) continue;
+          for (const entry of block.entries) {
+            if (entry.key !== action.entryKey) continue;
+            for (const field of entry.fields) {
+              if (field.id === action.fieldId) {
+                field.choice = action.choice;
+                field.auto = false;
+              }
+            }
+            entry.status = entry.fields.some((item) => item.choice === null)
+              ? 'pending'
+              : entry.fields.some((item) => item.auto)
+                ? 'auto'
+                : 'resolved';
+          }
+        }
+        session.updatedAt = new Date().toISOString();
+        return session;
+      });
+      return {
+        workspace: next,
+        past: [...state.past.slice(-49), clone(state.workspace)],
+        future: [],
+        lastAction: '已记录操作人的候选选择'
+      };
+    }
+    case 'merge/freeze': {
+      const next = clone(state.workspace);
+      withMergeSession(next, action.sessionId, (session) => {
+        const block = session.blocks.find((item) => item.id === action.blockId);
+        if (block) {
+          block.freezeChoice = action.choice;
+          block.freezeAuto = false;
+          block.freezeNote =
+            action.choice === 'base'
+              ? `已按操作人决定保留原冻结状态（${block.freezeBase ? '已冻结' : '未冻结'}），编程执行的越权改动被挡下。`
+              : '已按操作人决定采用该冻结候选。';
+          session.updatedAt = new Date().toISOString();
+        }
+        return session;
+      });
+      return {
+        workspace: next,
+        past: [...state.past.slice(-49), clone(state.workspace)],
+        future: [],
+        lastAction: '已处理冻结状态决定'
+      };
+    }
+    case 'merge/finish': {
+      const next = clone(state.workspace);
+      next.plans.push(action.plan);
+      next.activePlanId = action.plan.id;
+      next.comparePlanId = state.workspace.activePlanId;
+      const firstScene = action.plan.scenes.find((scene) => scene.order === 1) ?? action.plan.scenes[0];
+      next.selectedSceneId = firstScene?.id ?? '';
+      next.selectedCueId = firstScene?.cues[0]?.id ?? '';
+      withMergeSession(next, action.sessionId, (session) => ({
+        ...session,
+        status: 'completed',
+        resultPlanId: action.plan.id,
+        resultPlanName: action.plan.name,
+        warnings: action.warnings,
+        updatedAt: new Date().toISOString()
+      }));
+      return {
+        workspace: next,
+        past: [...state.past.slice(-49), clone(state.workspace)],
+        future: [],
+        lastAction: '已生成合并方案并重算全剧时间与冲突'
+      };
+    }
+    case 'merge/remove': {
+      const next = clone(state.workspace);
+      next.mergeSessions = next.mergeSessions.filter((session) => session.id !== action.sessionId);
+      return {
+        workspace: next,
+        past: [...state.past.slice(-49), clone(state.workspace)],
+        future: [],
+        lastAction: '已移除合并任务'
+      };
+    }
     case 'undo': {
       const previous = state.past.at(-1);
       if (!previous) return state;

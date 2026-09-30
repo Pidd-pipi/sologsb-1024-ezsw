@@ -62,6 +62,7 @@ import {
   CircleDot,
   Clock3,
   Copy,
+  GitMerge,
   GripVertical,
   Lightbulb,
   Lock,
@@ -86,6 +87,8 @@ import {
   roleLabels,
   statusLabels
 } from './data';
+import MergeDesk from './merge/MergeDesk';
+import { sessionStats } from './merge/engine';
 import {
   LIGHTING_STORAGE_KEY,
   canEditScene,
@@ -96,7 +99,7 @@ import {
   formatTime,
   useLightingDesk
 } from './state/useLightingDesk';
-import type { Cue, CueConflict, LightingPlan, Scene, UserRole, Workspace } from './types';
+import type { Cue, CueConflict, LightingPlan, MergeChoice, MergeSession, Scene, UserRole, Workspace } from './types';
 
 const statusColors = {
   draft: 'orange',
@@ -572,6 +575,7 @@ export default function App() {
   const [online, setOnline] = useState(true);
   const [savedAt, setSavedAt] = useState('');
   const [syncMessage, setSyncMessage] = useState('离线草稿待命');
+  const [mergeOpen, setMergeOpen] = useState(false);
   const toast = useToast();
   const workspace = state.workspace;
   const activePlan = findActivePlan(workspace);
@@ -726,6 +730,25 @@ export default function App() {
       next.selectedCueId = copy.scenes[0]?.cues[0]?.id ?? '';
     });
     toast({ title: '已复制方案', status: 'success' });
+  }
+
+  const openMergeCount = workspace.mergeSessions
+    .filter((session) => session.status === 'open')
+    .reduce((total, session) => {
+      const stats = sessionStats(session);
+      return total + stats.pendingFields + stats.pendingFreezes;
+    }, 0);
+
+  function handleMergeCreate(session: MergeSession) {
+    dispatch({ type: 'merge/create', session });
+  }
+
+  function handleMergeField(sessionId: string, blockId: string, entryKey: string, fieldId: string, choice: MergeChoice) {
+    dispatch({ type: 'merge/field', sessionId, blockId, entryKey, fieldId, choice });
+  }
+
+  function handleMergeFinish(sessionId: string, plan: LightingPlan, warnings: string[]) {
+    dispatch({ type: 'merge/finish', sessionId, plan, warnings });
   }
 
   function jumpIncomplete() {
@@ -966,6 +989,19 @@ export default function App() {
               </Text>
             </Box>
 
+            <Button
+              colorScheme="amber"
+              variant="outline"
+              leftIcon={<GitMerge size={16} />}
+              onClick={() => setMergeOpen(true)}
+            >
+              离线草稿合并台
+              {openMergeCount ? (
+                <Badge ml={2} colorScheme="red" borderRadius="full">{openMergeCount}</Badge>
+              ) : workspace.mergeSessions.some((session) => session.status === 'open') ? (
+                <Badge ml={2} colorScheme="green" borderRadius="full">续做</Badge>
+              ) : null}
+            </Button>
             <Button variant="outline" leftIcon={<Copy size={16} />} onClick={duplicatePlan}>复制为新方案</Button>
             <Button variant="ghost" leftIcon={<RefreshCw size={16} />} onClick={exportPlan}>导出当前方案 JSON</Button>
           </VStack>
@@ -1140,8 +1176,22 @@ export default function App() {
         </Box>
       </Grid>
 
+      <MergeDesk
+        open={mergeOpen}
+        onClose={() => setMergeOpen(false)}
+        plans={workspace.plans}
+        role={workspace.role}
+        sessions={workspace.mergeSessions}
+        onCreate={handleMergeCreate}
+        onFieldChoice={handleMergeField}
+        onFreezeChoice={(sessionId, blockId, choice) => dispatch({ type: 'merge/freeze', sessionId, blockId, choice })}
+        onFinish={handleMergeFinish}
+        onRemove={(sessionId) => dispatch({ type: 'merge/remove', sessionId })}
+        onOpenPlan={(planId) => dispatch({ type: 'selectPlan', planId })}
+      />
+
       <Box as="footer" maxW="1920px" mx="auto" px={5} pb={7} color="whiteAlpha.400" fontSize="xs" textAlign="center">
-        所有方案与草稿保存在当前浏览器。清除站点数据会删除灯光设计台内容。
+        所有方案与草稿保存在当前浏览器。清除站点数据会删除灯光设计台内容。未完成的合并任务也会保留，重开页面后可继续。
       </Box>
     </Box>
   );

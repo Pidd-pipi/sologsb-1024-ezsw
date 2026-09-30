@@ -32,6 +32,7 @@ export function createInitialState(): EditorState {
 export type EditorAction =
   | { type: 'hydrate'; workspace: Workspace }
   | { type: 'commit'; label: string; mutate: (workspace: Workspace) => void }
+  | { type: 'importPlan'; label: string; plan: LightingPlan }
   | { type: 'selectScene'; sceneId: string }
   | { type: 'selectCue'; sceneId: string; cueId: string }
   | { type: 'selectPlan'; planId: string }
@@ -72,6 +73,19 @@ export function lightingReducer(state: EditorState, action: EditorAction): Edito
       normalizeWorkspace(next);
       const active = next.plans.find((plan) => plan.id === next.activePlanId);
       if (active) active.updatedAt = new Date().toISOString();
+      return {
+        workspace: next,
+        past: [...state.past.slice(-49), clone(state.workspace)],
+        future: [],
+        lastAction: action.label
+      };
+    }
+    case 'importPlan': {
+      const next = clone(state.workspace);
+      next.plans.push(clone(action.plan));
+      normalizeWorkspace(next);
+      const imported = next.plans.find((plan) => plan.id === action.plan.id);
+      if (imported) imported.updatedAt = new Date().toISOString();
       return {
         workspace: next,
         past: [...state.past.slice(-49), clone(state.workspace)],

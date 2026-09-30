@@ -62,6 +62,7 @@ import {
   CircleDot,
   Clock3,
   Copy,
+  GitMerge,
   GripVertical,
   Lightbulb,
   Lock,
@@ -97,6 +98,8 @@ import {
   useLightingDesk
 } from './state/useLightingDesk';
 import type { Cue, CueConflict, LightingPlan, Scene, UserRole, Workspace } from './types';
+import MergeDesk from './components/MergeDesk';
+import { loadMergeTasks, type MergeTask } from './merge';
 
 const statusColors = {
   draft: 'orange',
@@ -572,6 +575,9 @@ export default function App() {
   const [online, setOnline] = useState(true);
   const [savedAt, setSavedAt] = useState('');
   const [syncMessage, setSyncMessage] = useState('离线草稿待命');
+  const [mergeDeskOpen, setMergeDeskOpen] = useState(false);
+  const [mergeInitialTask, setMergeInitialTask] = useState<MergeTask | null>(null);
+  const [inProgressTasks, setInProgressTasks] = useState<MergeTask[]>([]);
   const toast = useToast();
   const workspace = state.workspace;
   const activePlan = findActivePlan(workspace);
@@ -599,6 +605,7 @@ export default function App() {
     }
     setHydrated(true);
     setOnline(navigator.onLine);
+    setInProgressTasks(loadMergeTasks().filter((task) => task.status === 'in-progress'));
   }, []);
 
   useEffect(() => {
@@ -815,6 +822,23 @@ export default function App() {
     URL.revokeObjectURL(url);
   }
 
+  function openMergeDesk() {
+    setMergeInitialTask(null);
+    setMergeDeskOpen(true);
+  }
+
+  function continueMergeTask(task: MergeTask) {
+    setMergeInitialTask(task);
+    setMergeDeskOpen(true);
+  }
+
+  function handleMergedPlan(plan: LightingPlan) {
+    dispatch({ type: 'importPlan', label: '导入离线草稿合并方案', plan });
+    setMergeDeskOpen(false);
+    setInProgressTasks(loadMergeTasks().filter((task) => task.status === 'in-progress'));
+    toast({ title: '合并方案已导入', description: plan.name, status: 'success', duration: 2200 });
+  }
+
   return (
     <Box minH="100vh">
       <Box as="header" position="sticky" top={0} zIndex={50} bg="rgba(9, 14, 24, .88)" backdropFilter="blur(18px)" borderBottomWidth="1px" borderColor="whiteAlpha.100">
@@ -896,6 +920,20 @@ export default function App() {
         </Flex>
       </Box>
 
+      {inProgressTasks.length > 0 ? (
+        <Alert status="info" borderRadius="xl" mx={{ base: 3, xl: 5 }} mt={3} maxW="1920px" w="auto">
+          <AlertIcon />
+          <Box flex="1">
+            <AlertDescription fontSize="sm">
+              有 {inProgressTasks.length} 个未完成的离线合并任务，可继续处理冲突与越权内容。
+            </AlertDescription>
+          </Box>
+          <Button size="sm" colorScheme="blue" variant="outline" onClick={() => continueMergeTask(inProgressTasks[0])}>
+            继续合并
+          </Button>
+        </Alert>
+      ) : null}
+
       <Grid className="desk-grid" templateColumns={{ base: '1fr', xl: '286px minmax(0, 1fr) 380px' }} gap={4} p={{ base: 3, xl: 5 }} maxW="1920px" mx="auto">
         <Box as="aside" className="side-panel" position="sticky" top="104px" alignSelf="start" maxH="calc(100vh - 124px)" overflowY="auto" pr={1}>
           <VStack align="stretch" spacing={4}>
@@ -966,6 +1004,7 @@ export default function App() {
               </Text>
             </Box>
 
+            <Button variant="outline" colorScheme="purple" leftIcon={<GitMerge size={16} />} onClick={openMergeDesk}>导入离线草稿合并</Button>
             <Button variant="outline" leftIcon={<Copy size={16} />} onClick={duplicatePlan}>复制为新方案</Button>
             <Button variant="ghost" leftIcon={<RefreshCw size={16} />} onClick={exportPlan}>导出当前方案 JSON</Button>
           </VStack>
@@ -1143,6 +1182,17 @@ export default function App() {
       <Box as="footer" maxW="1920px" mx="auto" px={5} pb={7} color="whiteAlpha.400" fontSize="xs" textAlign="center">
         所有方案与草稿保存在当前浏览器。清除站点数据会删除灯光设计台内容。
       </Box>
+
+      <MergeDesk
+        isOpen={mergeDeskOpen}
+        basePlan={activePlan}
+        initialTask={mergeInitialTask}
+        onClose={() => {
+          setMergeDeskOpen(false);
+          setInProgressTasks(loadMergeTasks().filter((task) => task.status === 'in-progress'));
+        }}
+        onMerged={handleMergedPlan}
+      />
     </Box>
   );
 }
